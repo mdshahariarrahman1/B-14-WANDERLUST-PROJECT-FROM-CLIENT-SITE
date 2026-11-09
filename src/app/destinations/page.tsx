@@ -1,4 +1,6 @@
 import * as React from "react";
+import Link from "next/link";
+import { headers } from "next/headers";
 
 import {
   DestinationsCatalog,
@@ -10,7 +12,6 @@ import {
 } from "@/app/destinations/normalize";
 import { API_BASE_URL } from "@/lib/api";
 import { auth } from "@/lib/auth";
-import { headers } from "next/headers";
 
 function DestinationsPage() {
   return (
@@ -39,43 +40,85 @@ function DestinationsPage() {
 }
 
 async function DestinationsData() {
+  // Request-time APIs try/catch-er baire rakhte hobe: prerender-e `headers()`
+  // Next-er hanging-promise signal diye reject kore, React seta handle kore.
+  const requestHeaders = await headers();
+
+  const session = await auth.api
+    .getSession({ headers: requestHeaders })
+    .catch(() => null);
+
+  if (!session?.user) {
+    return <LoginRequired />;
+  }
+
+  const jwtToken = await auth.api
+    .getToken({ headers: requestHeaders })
+    .catch(() => null);
+
+  if (!jwtToken?.token) {
+    return <LoginRequired />;
+  }
+
   let destinations: Destination[] = [];
-  let failed = false;
+  let status: "ok" | "unauthorized" | "failed" = "ok";
 
   try {
-    const jwtToken = await auth.api.getToken({ headers: await headers() });
-
-    if (!jwtToken?.token) {
-      throw new Error("No active session.");
-    }
-
     const response = await fetch(`${API_BASE_URL}/destinations`, {
       cache: "no-store",
-      headers: { authorization: `Bearer ${jwtToken.token}` },
+      headers: { Authorization: `Bearer ${jwtToken.token}` },
     });
 
-    if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      status = "unauthorized";
+    } else if (!response.ok) {
       throw new Error(
         `The destinations request failed with status ${response.status}`,
       );
+    } else {
+      const documents = (await response.json()) as DestinationDocument[];
+      destinations = documents.map(normalizeDestination);
     }
-
-    const documents = (await response.json()) as DestinationDocument[];
-    destinations = documents.map(normalizeDestination);
   } catch (error) {
-    console.error("Failed to load destinations:", error);
-    failed = true;
+    console.error("Failed to load destinations:", {
+      name: error instanceof Error ? error.name : typeof error,
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    status = "failed";
   }
 
-  if (failed || destinations.length === 0) {
-    return (
-      <p className="mt-10 text-lg font-light text-neutral-600">
-        Destinations are temporarily unavailable. Please try again later.
-      </p>
-    );
+  if (status === "unauthorized") {
+    return <LoginRequired expired />;
+  }
+
+  if (status === "failed" || destinations.length === 0) {
+    return <DestinationsUnavailable />;
   }
 
   return <DestinationsCatalog destinations={destinations} />;
+}
+
+function LoginRequired({ expired = false }: { expired?: boolean }) {
+  return (
+    <p className="mt-10 text-lg font-light text-neutral-600">
+      {expired
+        ? "Your session has expired. "
+        : "You need to be signed in to explore destinations. "}
+      <Link href="/login" className="text-neutral-950 underline">
+        Log in
+      </Link>{" "}
+      to continue.
+    </p>
+  );
+}
+
+function DestinationsUnavailable() {
+  return (
+    <p className="mt-10 text-lg font-light text-neutral-600">
+      Destinations are temporarily unavailable. Please try again later.
+    </p>
+  );
 }
 
 function CatalogFallback() {

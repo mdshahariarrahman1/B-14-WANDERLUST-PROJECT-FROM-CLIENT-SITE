@@ -52,16 +52,29 @@ export function FeaturedDestinations() {
 // Same pattern as /destinations: stream the uncached backend read inside a
 // Suspense boundary, normalize both document shapes, and degrade gracefully.
 async function FeaturedDestinationsData() {
+  // Keep request-time APIs outside try/catch: during prerender `headers()`
+  // rejects with Next's hanging-promise signal, which React must handle.
+  const requestHeaders = await headers();
+  const session = await auth.api
+    .getSession({ headers: requestHeaders })
+    .catch(() => null);
+
+  if (!session?.user) {
+    return <FeaturedUnavailable />;
+  }
+
+  const jwtToken = await auth.api
+    .getToken({ headers: requestHeaders })
+    .catch(() => null);
+
+  if (!jwtToken?.token) {
+    return <FeaturedUnavailable />;
+  }
+
   let destinations: Destination[] = [];
   let failed = false;
 
   try {
-    const jwtToken = await auth.api.getToken({ headers: await headers() });
-
-    if (!jwtToken?.token) {
-      throw new Error("No active session.");
-    }
-
     const response = await fetch(`${API_BASE_URL}/destinations`, {
       headers: { authorization: `Bearer ${jwtToken.token}` },
       cache: "no-store",
@@ -80,14 +93,18 @@ async function FeaturedDestinationsData() {
   }
 
   if (failed || destinations.length === 0) {
-    return (
-      <p className="mt-12 text-lg font-light text-neutral-600">
-        Could not load destinations. Is the backend server running?
-      </p>
-    );
+    return <FeaturedUnavailable />;
   }
 
   return <FeaturedCarousel destinations={destinations} />
+}
+
+function FeaturedUnavailable() {
+  return (
+    <p className="mt-12 text-lg font-light text-neutral-600">
+      Could not load destinations. Is the backend server running?
+    </p>
+  );
 }
 
 function FeaturedCarouselFallback() {
